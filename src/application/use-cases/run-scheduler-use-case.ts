@@ -90,6 +90,8 @@ export class RunSchedulerUseCase {
     // Emite invoices
     const min = this.config.minInvoicesPerCycle ?? 8;
     const max = this.config.maxInvoicesPerCycle ?? 12;
+    // Math.random() aqui so sorteia o tamanho do lote dentro da faixa exigida
+    // pelo desafio (8-12) - nao e usado para nada relacionado a seguranca.
     const invoiceCount = Math.floor(Math.random() * (max - min + 1)) + min;
     const invoiceIds: string[] = [];
     let hasFailure = false;

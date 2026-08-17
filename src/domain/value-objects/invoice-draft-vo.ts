@@ -16,6 +16,11 @@ export interface InvoiceDraft {
  * sequencias repetidas (111.111.111 etc.), que sao formalmente validas no
  * modulo 11 mas rejeitadas por qualquer validador de CPF real por serem
  * numeros de teste/invalidos conhecidos.
+ *
+ * Math.random() e apropriado aqui: o CPF gerado e dado sintetico de teste
+ * para o destinatario da invoice (o proprio desafio pede "pessoas
+ * aleatorias"), nunca usado como segredo, credencial ou identificador de
+ * seguranca - um PRNG nao-criptografico nao enfraquece nada.
  */
 export function generateCpf(): string {
   // 9 digitos base do CPF. O re-sorteio abaixo existe porque uma sequencia
@@ -54,6 +59,8 @@ const NAMES = [
  * Amount: entre 1000 e 50000 centavos (R$10 a R$500).
  */
 export function generateInvoiceDraft(): InvoiceDraft {
+  // amount/name sorteados aqui sao dado de teste sintetico (mesmo raciocinio
+  // de generateCpf acima) - nao ha uso criptografico ou de seguranca.
   return {
     amount: Math.floor(Math.random() * (50000 - 1000 + 1)) + 1000,
     name: NAMES[Math.floor(Math.random() * NAMES.length)],

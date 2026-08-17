@@ -31,6 +31,9 @@ export async function withRetry<T>(
       if (attempt === maxAttempts) break;
 
       const exponential = baseDelay * Math.pow(2, attempt - 1);
+      // Math.random() aqui e so jitter de timing (evita retries sincronizados
+      // entre chamadas concorrentes) - nao produz segredo, token ou decisao
+      // de seguranca, entao um PRNG nao-criptografico e apropriado.
       const delay = Math.min(exponential, maxDelay) + Math.floor(Math.random() * 100);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
