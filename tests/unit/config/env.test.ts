@@ -6,11 +6,25 @@ import { loadEnv, EnvValidationError } from '../../../src/config/env';
 
 const ORIGINAL_ENV = { ...process.env };
 
+// Isola os testes de qualquer STARKBANK_PRIVATE_KEY(_PATH) real do ambiente
+// host (ex: privateKey.pem local, presente no disco do dev mas nao no
+// checkout limpo do CI) - sem isso, os testes que nao mexem com a chave
+// passam so por acidente, dependendo de arquivo fora do controle do teste.
+// Os testes que exercitam especificamente o carregamento por PATH (abaixo)
+// sobrescrevem STARKBANK_PRIVATE_KEY_PATH explicitamente, entao o default
+// nunca entra no caminho deles.
 function resetEnv(overrides: Record<string, string | undefined>) {
   process.env = { ...ORIGINAL_ENV };
+  delete process.env.STARKBANK_PRIVATE_KEY;
+  delete process.env.STARKBANK_PRIVATE_KEY_PATH;
+
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
+  }
+
+  if (process.env.STARKBANK_PRIVATE_KEY === undefined && process.env.STARKBANK_PRIVATE_KEY_PATH === undefined) {
+    process.env.STARKBANK_PRIVATE_KEY = 'default-inline-pem-para-teste';
   }
 }
 
