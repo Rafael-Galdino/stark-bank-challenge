@@ -1,0 +1,150 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Evita deploys concorrentes pisando um no outro; PRs cancelam runs antigas.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  test:
+    name: Test + Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      # Falha o job se cobertura ficar abaixo dos thresholds (80%) definidos em vitest.config.ts
+      - run: npm run test:coverage
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  build:
+    name: TypeScript build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+  sonarcloud:
+    name: SonarCloud analysis
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # SonarCloud precisa do historico completo pra analise de blame/novo codigo
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+      - name: Quality Gate check
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: [build, sonarcloud]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # obrigatorio p/ autenticacao OIDC (Workload Identity Federation) sem chave estatica
+    env:
+      REGION: southamerica-east1
+      REPOSITORY: stark-bank-repo
+      SERVICE: stark-bank-api
+      RUN_SA: stark-bank-run
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/${SERVICE}"
+          # --platform=linux/amd64 obrigatorio: Cloud Run so roda amd64, runner do GH Actions e amd64
+          # entao aqui e implicito, mas mantido explicito por clareza/paridade com deploy manual.
+          docker build --platform=linux/amd64 \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:latest" \
+            .
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: Push image
+        run: |
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image="${IMAGE}:${{ github.sha }}" \
+            --platform=managed \
+            --region="$REGION" \
+            --service-account="${RUN_SA}@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --min-instances=1 \
+            --max-instances=10 \
+            --timeout=60s \
+            --set-env-vars="GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},STARKBANK_ENVIRONMENT=${{ secrets.STARKBANK_ENVIRONMENT }}" \
+            --set-secrets="STARKBANK_PRIVATE_KEY=starkbank-private-key:latest,STARKBANK_PROJECT_ID=starkbank-project-id:latest" \
+            --allow-unauthenticated \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --quiet
+
+      - name: Show deployed URL
+        run: |
+          gcloud run services describe "$SERVICE" \
+            --region="$REGION" \
+            --format='value(status.url)' \
+            --project="${{ secrets.GCP_PROJECT_ID }}"

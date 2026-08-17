@@ -1,0 +1,38 @@
+{
+  "name": "stark-bank-challenge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend de integracao com Stark Bank para o desafio de Staff Engineer",
+  "main": "dist/main.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx --env-file=.env src/main.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "webhook:subscribe": "tsx --env-file=.env scripts/webhook-subscribe.ts",
+    "transfer-account:bootstrap": "tsx --env-file=.env scripts/bootstrap-transfer-account.ts",
+    "test-state:clear": "tsx --env-file=.env scripts/clear-test-state.ts"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.11.0",
+    "fastify": "^4.29.1",
+    "google-auth-library": "^9.15.1",
+    "pino": "^8.21.0",
+    "starkbank": "^2.42.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/supertest": "^6.0.3",
+    "@vitest/coverage-v8": "^1.6.1",
+    "supertest": "^6.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^1.6.1"
+  }
+}
