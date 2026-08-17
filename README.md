@@ -528,7 +528,76 @@ Conferir no Console (**Cloud Scheduler**): `invoice-batch` (`0 */3 * * *`, `Amer
 
 ### Desfazendo tudo
 
-`./scripts/gcp/99-teardown.sh --confirm` remove Cloud Run, Scheduler, Artifact Registry, Secret Manager e o Firestore database (operação destrutiva e majoritariamente irreversível — mantém de propósito o Workload Identity Pool/Provider, que tem soft-delete de 30 dias).
+`./scripts/gcp/99-teardown.sh --confirm` remove Cloud Run, Scheduler, Artifact Registry, Secret Manager e o Firestore database (operação destrutiva e majoritariamente irreversível — mantém de propósito o Workload Identity Pool/Provider, que tem soft-delete de 30 dias). O NAT/IP fixo (seção abaixo) **não** é removido por esse script — precisa dos comandos manuais descritos ali.
+
+---
+
+## Nota: IP de saída fixo (Cloud NAT) — por que foi necessário
+
+A Stark Bank Sandbox restringe por **allowlist de IP** as chamadas feitas com as credenciais do Project (o mesmo nível de acesso liberado no convite de Admin) — não só operações administrativas como registro de webhook, mas qualquer chamada da API (`invoice.create`, `transfer.create`, `balance.get` etc). Sem o IP de quem chama estar na lista, a API responde `400 invalidIp`.
+
+O problema: **Cloud Run não tem IP de saída fixo por padrão**. Confirmado na prática — só nos primeiros minutos após o primeiro deploy, cada novo start/restart de instância saiu com um IP diferente (`34.34.231.6`, `.11`, `.135`, `.141`, `.129`...), todos do pool dinâmico de egress do Google para a região. Isso é incompatível com uma allowlist estática: bastaria a instância reiniciar (deploy, manutenção do GCP, OOM — exatamente os cenários que o resto deste projeto trata como recuperáveis) para o IP mudar e todo `invoice.create`/`transfer.create` passar a falhar silenciosamente até alguém notar e atualizar a lista manualmente.
+
+**Solução:** IP externo estático reservado + Cloud Router + Cloud NAT, com o Cloud Run roteando 100% do egress por ali (Direct VPC Egress, sem precisar de Serverless VPC Connector). Resultado: um único IP fixo, cadastrado uma vez na allowlist da Stark Bank, que não muda em nenhum restart/redeploy subsequente.
+
+### O que foi criado
+
+```bash
+GCP_PROJECT_ID=stark-bank-505620-a7
+REGION=southamerica-east1
+
+# Compute Engine API e pre-requisito de VPC/Router/NAT e nao vem habilitada por padrao
+gcloud services enable compute.googleapis.com --project="$GCP_PROJECT_ID"
+
+# 1. IP externo estatico reservado (o valor final vira o IP a cadastrar na Stark Bank)
+gcloud compute addresses create stark-bank-nat-ip \
+  --region="$REGION" --project="$GCP_PROJECT_ID"
+
+# 2. Cloud Router (usa a VPC "default" e o subnet "default" ja existentes no projeto)
+gcloud compute routers create stark-bank-router \
+  --network=default --region="$REGION" --project="$GCP_PROJECT_ID"
+
+# 3. Cloud NAT, usando o IP reservado no passo 1
+gcloud compute routers nats create stark-bank-nat \
+  --router=stark-bank-router --region="$REGION" \
+  --nat-external-ip-pool=stark-bank-nat-ip \
+  --nat-custom-subnet-ip-ranges=default \
+  --project="$GCP_PROJECT_ID"
+
+# 4. Cloud Run passa a rotear todo o trafego de saida pela VPC (e portanto pelo NAT)
+gcloud run services update stark-bank-api \
+  --region="$REGION" --network=default --subnet=default \
+  --vpc-egress=all-traffic --project="$GCP_PROJECT_ID"
+```
+
+Confirmado em produção: o log `diagnostic.egress_ip` (emitido no startup, ver `src/main.ts`) passou a reportar sempre o mesmo IP reservado, mesmo após múltiplos redeploys.
+
+### Como remover após o teste de 24h (evitar custo recorrente)
+
+Cloud NAT + IP reservado têm custo por hora enquanto existem (pequeno, mas contínuo — zera assim que os recursos são removidos). **Ordem importa**: desconectar o Cloud Run da VPC antes de derrubar o NAT/router, e liberar o IP por último.
+
+```bash
+GCP_PROJECT_ID=stark-bank-505620-a7
+REGION=southamerica-east1
+
+# 1. Desconecta o Cloud Run da VPC - volta a usar o pool de IP dinamico do Google
+gcloud run services update stark-bank-api \
+  --region="$REGION" --clear-network --project="$GCP_PROJECT_ID"
+
+# 2. Remove o Cloud NAT
+gcloud compute routers nats delete stark-bank-nat \
+  --router=stark-bank-router --region="$REGION" --project="$GCP_PROJECT_ID" --quiet
+
+# 3. Remove o Cloud Router
+gcloud compute routers delete stark-bank-router \
+  --region="$REGION" --project="$GCP_PROJECT_ID" --quiet
+
+# 4. Libera o IP reservado (esse e o passo que efetivamente zera o custo)
+gcloud compute addresses delete stark-bank-nat-ip \
+  --region="$REGION" --project="$GCP_PROJECT_ID" --quiet
+```
+
+Depois desse teardown, o IP de saída volta a ser dinâmico — se o serviço continuar rodando além do teste de 24h com chamadas reais à Stark Bank, a allowlist da Stark Bank precisa ser reajustada de acordo (ou o NAT recriado).
 
 ---
 
