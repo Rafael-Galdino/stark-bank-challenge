@@ -509,9 +509,15 @@ O último comando imprime `GCP_DEPLOY_SA_EMAIL` e `GCP_WORKLOAD_IDENTITY_PROVIDE
 
 ### 4. Deploy
 
-O deploy **não é manual** — o job `deploy` do [`pipeline.yml`](.github/workflows/pipeline.yml) builda a imagem, publica no Artifact Registry e faz `gcloud run deploy` automaticamente a cada push em `main`, depois que os jobs de teste/build/SonarCloud passam. Basta:
+Todo push em `main` roda test → build → SonarCloud automaticamente. O job `deploy` (build+push da imagem, `gcloud run deploy`) **só roda se a mensagem do commit contiver a tag `[deploy]`** — sem isso, um commit normal (doc, refactor, ajuste de teste) não força rollout no Cloud Run:
 
 ```bash
+# so test/build/sonar, sem deploy
+git commit -m "docs: atualiza README"
+
+# dispara o deploy tambem
+git commit -m "fix: corrige X [deploy]"
+
 git push origin main
 ```
 
