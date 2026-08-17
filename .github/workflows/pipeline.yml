@@ -127,6 +127,7 @@ jobs:
           docker push "${IMAGE}:latest"
 
       - name: Deploy to Cloud Run
+        id: deploy
         run: |
           gcloud run deploy "$SERVICE" \
             --image="${IMAGE}:${{ github.sha }}" \
@@ -142,9 +143,25 @@ jobs:
             --project="${{ secrets.GCP_PROJECT_ID }}" \
             --quiet
 
-      - name: Show deployed URL
-        run: |
-          gcloud run services describe "$SERVICE" \
+          URL=$(gcloud run services describe "$SERVICE" \
             --region="$REGION" \
             --format='value(status.url)' \
-            --project="${{ secrets.GCP_PROJECT_ID }}"
+            --project="${{ secrets.GCP_PROJECT_ID }}")
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      # A URL do servico so existe depois do deploy acima (1a vez) - por isso
+      # INTERNAL_AUTH_AUDIENCE nao pode ir no --set-env-vars do passo anterior.
+      # Sem essa variavel, GoogleOidcAuthVerifier pula a checagem de audience
+      # e QUALQUER token OIDC do Google assinado (de qualquer SA/projeto)
+      # autentica em /internal/schedule e /internal/reconcile - a unica
+      # protecao dessas rotas, ja que o Cloud Run e --allow-unauthenticated.
+      - name: Set INTERNAL_AUTH_AUDIENCE (audience = a propria URL do servico)
+        run: |
+          gcloud run services update "$SERVICE" \
+            --region="$REGION" \
+            --update-env-vars="INTERNAL_AUTH_AUDIENCE=${{ steps.deploy.outputs.url }}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --quiet
+
+      - name: Show deployed URL
+        run: echo "${{ steps.deploy.outputs.url }}"
