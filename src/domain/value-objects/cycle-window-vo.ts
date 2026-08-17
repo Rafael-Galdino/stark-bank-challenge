@@ -37,9 +37,9 @@ export function buildCycleWindowId(now: Date, cycleMinutes: number = 180): strin
   // como "24" ao inves de "00". Sem essa normalizacao, buildCycleWindowId
   // calcularia totalMinutes=1440 para meia-noite e cairia no bucket seguinte
   // em vez do bucket 0 do dia certo.
-  const rawHour = parseInt(get('hour'), 10);
+  const rawHour = Number.parseInt(get('hour'), 10);
   const hour = rawHour === 24 ? 0 : rawHour;
-  const minute = parseInt(get('minute'), 10);
+  const minute = Number.parseInt(get('minute'), 10);
 
   const totalMinutes = hour * 60 + minute;
   const bucket = Math.floor(totalMinutes / cycleMinutes);

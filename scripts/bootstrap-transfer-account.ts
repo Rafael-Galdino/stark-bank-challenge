@@ -2,8 +2,7 @@
  * scripts/bootstrap-transfer-account.ts
  *
  * Popula o documento starkbank_challenge_config/transfer_target no Firestore com os
- * dados fixos da conta destino do transfer (ver seed/transfer-target.json
- * e SPEC_NODE.md secao 1.2).
+ * dados fixos da conta destino do transfer (ver seed/transfer-target.json).
  *
  * Uso:
  *   GCP_PROJECT_ID=meu-projeto npx tsx scripts/bootstrap-transfer-account.ts

@@ -56,7 +56,7 @@ export type Env = Omit<ParsedEnv, 'STARKBANK_PRIVATE_KEY'> & {
 function loadPrivateKey(rawKey: string | undefined, keyPath: string): string {
   const inline = rawKey?.trim();
   if (inline) {
-    return inline.replace(/\\n/g, '\n');
+    return inline.replaceAll('\\n', '\n');
   }
 
   const resolvedPath = isAbsolute(keyPath) ? keyPath : resolve(process.cwd(), keyPath);

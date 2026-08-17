@@ -85,7 +85,7 @@ export interface EventStoreRepository {
   completeSchedulerCycle(cycleId: string, invoiceIds: string[]): Promise<void>;
 
   /**
-   * Le o estado global do run (starkbank_challenge_config/run) ou o cria na primeira
+   * Le o estado global da execucao (starkbank_challenge_config/execution) ou o cria na primeira
    * chamada. O startedAt precisa ser fixado nesse primeiro momento e depois
    * nunca mudar - e ele que ancora a deadline e a contagem de ciclos do
    * desafio inteiro, entao chamadas seguintes so devem retornar o que ja
