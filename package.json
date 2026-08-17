@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "webhook:subscribe": "tsx --env-file=.env scripts/webhook-subscribe.ts",
     "transfer-account:bootstrap": "tsx --env-file=.env scripts/bootstrap-transfer-account.ts",
-    "test-state:clear": "tsx --env-file=.env scripts/clear-test-state.ts"
+    "test-state:clear": "tsx --env-file=.env scripts/clear-test-state.ts",
+    "report:execution": "tsx --env-file=.env scripts/generate-execution-report.ts"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0",

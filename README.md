@@ -619,6 +619,7 @@ Depois desse teardown, o IP de saída volta a ser dinâmico — se o serviço co
 | `npm run webhook:subscribe` | Registra o webhook via SDK Stark Bank |
 | `npm run transfer-account:bootstrap` | Seed da conta destino no Firestore |
 | `npm run test-state:clear` | Limpa estado de teste no Firestore |
+| `npm run report:execution` | Gera `RELATORIO_EXECUCAO.md` — evidência dos 8 ciclos/24h, consultando só a API da Stark Bank (sem depender do Firestore) |
 
 ---
 
