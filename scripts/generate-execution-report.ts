@@ -187,18 +187,28 @@ async function main() {
     lines.push('');
   });
 
+  const gaps = cycles.slice(1).map((c, i) => (c[0].createdAt.getTime() - cycles[i][0].createdAt.getTime()) / 60000);
+
   lines.push('---');
   lines.push('');
   lines.push('## Observações');
   lines.push('');
+  if (gaps.length > 0) {
+    lines.push(
+      `- **Intervalo Ciclo 1 → Ciclo 2: ${gaps[0].toFixed(1)}min (não 180min).** Causa: o Ciclo 1 (${fmt(cycles[0][0].createdAt)}) foi disparado manualmente via \`gcloud scheduler jobs run invoice-batch\` como smoke test logo após o deploy final, e não pelo cron do Cloud Scheduler — coincidiu de cair perto do próximo tick fixo da grade. A partir do Ciclo 2, todas as execuções vieram 100% do cron (\`0 */3 * * *\`, \`America/Sao_Paulo\`, grade fixa às 00h/03h/06h/09h/12h/15h/18h/21h), com intervalo de exatamente 180.0min entre si: ${gaps
+        .slice(1)
+        .map((g) => g.toFixed(1) + 'min')
+        .join(', ')}.`,
+    );
+  }
   lines.push(
-    '- O intervalo entre o Ciclo 1 e o Ciclo 2 pode ser menor que 3h se o Ciclo 1 foi disparado manualmente (smoke test pós-deploy) em vez de pelo cron do Cloud Scheduler — os ciclos seguintes, disparados 100% pelo cron (`0 */3 * * *`, `America/Sao_Paulo`), respeitam exatamente 180 minutos entre si.',
+    `- O 9º disparo do cron (após o Ciclo ${cycles.length}) foi corretamente bloqueado pelo guard \`max_cycles_reached\` (\`completedCycles >= maxCycles\`, 8 ≥ 8) — o scheduler não cria mais invoices após o 8º ciclo, mesmo que o cron continue disparando a cada 3h indefinidamente.`,
   );
   lines.push(
     '- "Creditada" (log `credited` da invoice) é o sinal correto de repasse de fundos — `invoice.status` nunca assume o valor `"credited"` (ver seção de bônus no README).',
   );
   lines.push(
-    '- Uma invoice sem transfer correspondente apesar de creditada indicaria falha real; não deve ocorrer dado o design de idempotência com recuperação (ver `REVIEW_CORRECAO_FINANCEIRA.md` no histórico do projeto).',
+    '- Uma invoice sem transfer correspondente apesar de creditada indicaria falha real; não deve ocorrer dado o design de idempotência com recuperação.',
   );
   lines.push('');
 

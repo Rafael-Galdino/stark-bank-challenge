@@ -11,6 +11,7 @@ Backend do teste técnico para a vaga de Staff Software Engineer na Stark Bank.
 O fluxo é: emitir invoices em lotes agendados, receber o webhook quando uma delas é paga no sandbox, e transferir o valor líquido (`amount - fee`) para uma conta fixa da Stark Bank. O ponto central não é o CRUD contra a API — é garantir que nenhum centavo se perca ou se duplique quando webhook, scheduler e a própria API sandbox se comportam de forma imperfeita (entrega repetida, disparo duplicado, falha transitória).
 
 **Projeto GCP utilizado:** `stark-bank-505620-a7` (região `southamerica-east1`)
+
 **Documentação Stark Bank:** [API](https://starkbank.com/docs/api) · [Invoice](https://starkbank.com/docs/api#invoice) · [Transfer](https://starkbank.com/docs/api#transfer) · [Webhook](https://starkbank.com/docs/api#webhook) · [Gerar chaves ECDSA](https://starkbank.com/faq/how-to-create-ecdsa-keys)
 
 ---
@@ -23,7 +24,7 @@ O fluxo é: emitir invoices em lotes agendados, receber o webhook quando uma del
 4. Ao receber o webhook do log `credited` de uma invoice, fazer um **Transfer** do valor recebido menos as taxas para a conta abaixo.
 5. Publicar o código e, como bônus, rodar em cloud.
 
-**Conta destino do transfer** (fonte: [`seed/transfer-target.json`](seed/transfer-target.json), seedado no Firestore em `starkbank_challenge_config/transfer_target`):
+**Conta destino**:
 
 | Campo | Valor |
 |-------|-------|
@@ -33,6 +34,15 @@ O fluxo é: emitir invoices em lotes agendados, receber o webhook quando uma del
 | name | Stark Bank S.A. |
 | taxId | `20.018.183/0001-80` |
 | accountType | `payment` |
+
+---
+
+## Bônus: bugs encontrados no SDK/API pública da Stark Bank
+
+Dois problemas reais e reproduzíveis, confirmados contra o sandbox ao vivo durante o desenvolvimento:
+
+1. **`starkbank.webhook.query()` retorna `Promise<AsyncGenerator>`, não `AsyncGenerator` nem `Promise<Array>`.** O `query` do SDK Node é declarado `async function` e internamente retorna o resultado de chamar uma `async function*` — então quem chama precisa dar `await` na chamada **e** iterar com `for await`. Um `for await (const x of starkbank.webhook.query({}))` sozinho (sem o `await` externo) lança `TypeError: ... is not async iterable`. Essa mesma armadilha existe em `transfer.query()` (usado em `findTransferByExternalId`, ver `stark-bank-sdk-repository.ts`) — inclusive os tipos declarados (`.d.ts`) do SDK afirmam `Promise<Transfer[]>`, o que não bate com o comportamento real em runtime.
+2. **`Invoice.status` nunca assume o valor `"credited"`, mesmo sendo o valor que o integrador realmente precisa observar.** O campo `status` da Invoice só aceita `created | paid | overdue | canceled | expired | unknown | voided` — a própria API rejeita `"credited"` como filtro inválido. O sinal real de que o dinheiro foi creditado é `InvoiceLog.type === 'credited'`, um campo separado, no *log*, não na invoice. Isso é fácil de errar a partir da própria documentação do SDK (`Log.type` é documentado com exemplos `'registered'`/`'paid'`, sem menção a `'credited'`) — e errar significa que o webhook handler nunca cria um transfer para uma invoice paga, silenciosamente. Verificado direto no histórico de log de uma invoice real no sandbox.
 
 ---
 
@@ -52,25 +62,6 @@ Em qualquer uma dessas situações, o sistema não pode transferir em duplicidad
 2. **`externalId` no Transfer** (`invoice-{invoiceId}`) — a Stark Bank rejeita um segundo transfer com o mesmo `externalId` ("Duplicated externalIds will cause failures", conforme o próprio SDK documenta). Essa é a barreira de backstop: mesmo que a primeira falhe ou corra, o dinheiro não sai duas vezes.
 
 O ponto fino — e onde encontrei a maioria dos bugs na auto-revisão — é que a **primeira barreira precisa saber conversar com a segunda**. Se a Stark Bank rejeita por `externalId` duplicado, isso significa "já tive sucesso antes", não "falhei agora"; tratar os dois casos da mesma forma rotula um pagamento bem-sucedido como `failed` para sempre. O `TransferService` agora busca o transfer existente antes de declarar falha (`findTransferByExternalId`), exatamente para fechar essa lacuna.
-
-### Sugestão de evolução para o ambiente produtivo
-
-Para o volume deste desafio (64–96 invoices em 24h, dezenas de webhooks), processamento síncrono dentro do próprio Cloud Run — webhook responde 200 e processa o transfer em background via `setImmediate`, reconciliação varre o Firestore a cada 15 minutos — é proporcional. Eu **não** levaria esse desenho como está para o volume e o rigor de produção real de uma fintech, embora os princípios (idempotência em camada dupla, estado auditável no Firestore, fail-closed em vez de fail-open) continuassem os mesmos.
-
-A evolução natural seria separar **ingestão** de **processamento**:
-
-| Camada | Hoje (este repo) | Em produção de alto volume | Ganho |
-|--------|-------------------|------------------------------|-------|
-| Ingestão do webhook | Valida assinatura e processa tudo no mesmo request handler (background via `setImmediate`) | Serviço fino que só valida ECDSA, persiste o evento bruto e publica num tópico (Pub/Sub) | Desacopla o tempo de resposta à Stark Bank do tempo de processamento; absorve pico sem represar o handler HTTP |
-| Execução do transfer | `TransferService` chamado inline no mesmo processo | Consumidor idempotente dedicado, escalando à parte | Retry/backoff/DLQ por assinatura, sem competir por recursos com o caminho de ingestão |
-| Scheduler de invoices | Mesmo serviço, mesmo processo | Worker dedicado ou Cloud Tasks com fila própria | Falha no lote de invoices não compete com o caminho crítico do webhook |
-| Observabilidade | Logs estruturados + guard clauses | Métricas de negócio (centavos em risco, taxa de `duplicate_skipped`, lag de fila) com alerta por SLO | Detecta anomalia financeira antes de virar incidente |
-
-Um ponto que vale deixar explícito: **fila não substitui idempotência, só muda onde ela precisa acontecer** — o consumidor de um tópico Pub/Sub ainda recebe redelivery e ainda precisa do mesmo claim transacional que já existe aqui. É por isso que mantive o claim como o conceito central da solução, mesmo sem barramento neste repositório: é a peça que sobrevive à mudança de topologia.
-
-Microsserviço entraria por motivo operacional concreto (times diferentes, cadência de deploy diferente, perfil de escala divergente entre ingestão latency-sensitive e lote batch) — não como default. Para este teste, a escolha consciente foi provar entendimento do problema de dinheiro em sistema distribuído com o mínimo de peças móveis, e documentar aqui onde a próxima camada de resiliência entraria se volume/criticidade justificassem.
-
----
 
 ## Arquitetura
 
@@ -260,22 +251,22 @@ sequenceDiagram
 
 ---
 
-## Matriz de decisão
+### Sugestão de evolução para o ambiente produtivo
 
-| Decisão | Escolha | Alternativas consideradas | Motivo |
-|---|---|---|---|
-| Mensageria | Processamento síncrono no Cloud Run (fire-and-forget) | Pub/Sub, Cloud Tasks | Volume baixo (64–96 invoices/24h). Fila não elimina idempotência nem reconciliação, só adiciona infra e superfície de debug pra este volume |
-| Compute | 1 serviço Cloud Run, camadas separadas no código | N microsserviços | Mesmo domínio, mesmo SDK, mesmo Firestore — separar deploy não traz ganho aqui |
-| Banco de estado | Firestore Native | Cloud SQL, Redis | Transação atômica nativa (essencial pro claim), free tier generoso, zero ops pro volume do teste |
-| Idempotência de webhook | Claim transacional por `event.id`, com retry imediato em `failed` | Só `externalId` no Transfer | Stark Bank entrega at-least-once — sem as duas barreiras, `failed` vira estado terminal incorreto |
-| Idempotência de transfer | `externalId: invoice-{invoiceId}` + lookup de recuperação em caso de rejeição | `externalId` sem lookup de recuperação | Sem o lookup, um transfer que já teve sucesso e foi rejeitado por duplicidade fica marcado `failed` pra sempre |
-| Falha pós-200 | Reconciliação a cada 15min, **re-adquirindo o claim** antes de chamar a Stark Bank | Retry inline; reconciliação sem re-claim | Sem re-claim, duas execuções concorrentes de reconciliação (ou reconciliação x reentrega de webhook) competem pelo mesmo `externalId` sem coordenação |
-| Scheduler duplicado | Lock transacional por `cycleId`, com recuperação de `running` obsoleto (+10min) | Confiar no Cloud Scheduler | At-least-once do Scheduler; sem recovery, um crash no meio do lote trava o ciclo pra sempre |
-| Assinatura inválida vs. erro de infra | 400 só para assinatura genuinamente inválida (`InvalidWebhookSignatureError`); qualquer outro erro (rede/timeout buscando a chave pública) → 503 | 400 para qualquer erro em `verifySignature` | A Stark Bank trata 4xx como permanente e não retenta — confundir com falha transitória perde o webhook de uma invoice paga de forma silenciosa |
-| Cold start | `--min-instances=1` | scale to zero | Webhook não pode esperar cold start; também reduz a janela sem cache da chave pública ECDSA |
-| Endpoints internos | OIDC do Cloud Scheduler, audience = URL do próprio Cloud Run | API key estática | Sem segredo estático pra vazar; nativo do Cloud Run/Scheduler |
-| CI/CD | GitHub Actions completo — test → build → SonarCloud → deploy, autenticando na GCP via Workload Identity Federation | Deploy manual; chave JSON de service account | Sem chave estática commitável no repo/secrets; deploy é gate de qualidade (coverage 80% + Sonar) antes de subir |
-| HTTP framework | Fastify | Express | Precisa de raw body isolado por escopo de plugin pra validação ECDSA, sem afetar o parsing JSON das demais rotas |
+Para o volume deste desafio (64–96 invoices em 24h, dezenas de webhooks), processamento síncrono dentro do próprio Cloud Run — webhook responde 200 e processa o transfer em background via `setImmediate`, reconciliação varre o Firestore a cada 15 minutos — é proporcional. Eu **não** levaria esse desenho como está para o volume e o rigor de produção real de uma fintech, embora os princípios (idempotência em camada dupla, estado auditável no Firestore, fail-closed em vez de fail-open) continuassem os mesmos.
+
+A evolução natural seria separar **ingestão** de **processamento**:
+
+| Camada | Hoje (este repo) | Em produção de alto volume | Ganho |
+|--------|-------------------|------------------------------|-------|
+| Ingestão do webhook | Valida assinatura e processa tudo no mesmo request handler (background via `setImmediate`) | Serviço fino que só valida ECDSA, persiste o evento bruto e publica num tópico (Pub/Sub) | Desacopla o tempo de resposta à Stark Bank do tempo de processamento; absorve pico sem represar o handler HTTP |
+| Execução do transfer | `TransferService` chamado inline no mesmo processo | Consumidor idempotente dedicado, escalando à parte | Retry/backoff/DLQ por assinatura, sem competir por recursos com o caminho de ingestão |
+| Scheduler de invoices | Mesmo serviço, mesmo processo | Worker dedicado ou Cloud Tasks com fila própria | Falha no lote de invoices não compete com o caminho crítico do webhook |
+| Observabilidade | Logs estruturados + guard clauses | Métricas de negócio (centavos em risco, taxa de `duplicate_skipped`, lag de fila) com alerta por SLO | Detecta anomalia financeira antes de virar incidente |
+
+Um ponto que vale deixar explícito: **fila não substitui idempotência, só muda onde ela precisa acontecer** — o consumidor de um tópico Pub/Sub ainda recebe redelivery e ainda precisa do mesmo claim transacional que já existe aqui. É por isso que mantive o claim como o conceito central da solução, mesmo sem barramento neste repositório: é a peça que sobrevive à mudança de topologia.
+
+Microsserviço entraria por motivo operacional concreto (times diferentes, cadência de deploy diferente, perfil de escala divergente entre ingestão latency-sensitive e lote batch) — não como default. Para este teste, a escolha consciente foi provar entendimento do problema de dinheiro em sistema distribuído com o mínimo de peças móveis, e documentar aqui onde a próxima camada de resiliência entraria se volume/criticidade justificassem.
 
 ---
 
@@ -296,7 +287,7 @@ sequenceDiagram
 
 ---
 
-## Resiliência e cenários de borda
+## Resiliência
 
 | Cenário | Comportamento |
 |---|---|
@@ -345,26 +336,6 @@ Logs estruturados em JSON via [pino](https://github.com/pinojs/pino), com campo 
   "durationMs": 320
 }
 ```
-
-**Mensagens estruturadas emitidas pelo sistema:**
-
-| `message` | Quando |
-|---|---|
-| `webhook.received` | Toda entrega de webhook com assinatura válida |
-| `webhook.invoice_credited` | Log `credited` de invoice, antes do claim |
-| `webhook.duplicate_skipped` | Claim retornou `skip` (evento já tratado, ou em andamento) |
-| `webhook.invalid_signature` | Assinatura genuinamente inválida → 400 |
-| `webhook.signature_verification_infra_error` | Erro de infra verificando a assinatura → 503 |
-| `webhook.background_error` | Erro não tratado no processamento em background |
-| `transfer.created` | Transfer criado com sucesso |
-| `transfer.skipped_fee_gte_amount` | `fee >= amount`, completado sem transfer |
-| `transfer.recovered_from_duplicate` | Erro na criação, mas transfer já existia — recuperado como sucesso |
-| `transfer.failed` | Falha real, sem transfer existente encontrado |
-| `scheduler.cycle_completed` | Ciclo de invoices concluído (`completed` ou `partial_failure`) |
-| `scheduler.cycle_skipped` | Ciclo pulado (`skipReason`: `period_expired`, `max_cycles_reached`, `duplicate_cycle`) |
-| `reconciliation.claim_skipped` | Reconciliação perdeu a corrida do claim pra outro processo |
-| `reconciliation.run_completed` | Resumo do ciclo de reconciliação (`retried`/`completed`/`failed`) |
-
 ---
 
 ## Estrutura do projeto
@@ -425,34 +396,6 @@ stark-bank-challenge/
 | Logs | pino (JSON estruturado) |
 | CI/CD | GitHub Actions — test/coverage, build, SonarCloud, deploy via Workload Identity Federation |
 | Infra | Cloud Run, Firestore, Secret Manager, Artifact Registry, Cloud Scheduler |
-
----
-
-## Variáveis de ambiente
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `STARKBANK_PROJECT_ID` | — (obrigatório) | ID do Project criado no dashboard Stark Bank |
-| `STARKBANK_PRIVATE_KEY` | — | Chave privada ECDSA inline (opcional se usar `_PATH`) |
-| `STARKBANK_PRIVATE_KEY_PATH` | `privateKey.pem` | Caminho local do `.pem` (usado se a variável acima não for setada) |
-| `STARKBANK_ENVIRONMENT` | `sandbox` | `sandbox` ou `production` |
-| `GCP_PROJECT_ID` | — | ID do projeto GCP (Firestore) |
-| `PORT` | `8080` | Porta HTTP |
-| `LOG_LEVEL` | `info` | Nível de log do pino |
-| `INTERNAL_AUTH_AUDIENCE` | — | Audience esperada nos tokens OIDC de `/internal/*` (deve ser a própria URL do Cloud Run) |
-| `SCHEDULER_CYCLE_MINUTES` | `180` | Duração de cada ciclo do scheduler (regra final: 3h) |
-| `SCHEDULER_TOTAL_PERIOD` | `1440` | Janela total em minutos (regra final: 24h) |
-| `SCHEDULER_START_AT` | — | Início fixo ISO8601 (opcional; senão, âncora no primeiro ciclo executado) |
-| `SCHEDULER_DEADLINE_GRACE_MINUTES` | `1` | Margem de tolerância na checagem de deadline |
-| `SCHEDULER_MIN_INVOICES` / `SCHEDULER_MAX_INVOICES` | `8` / `12` | Faixa de invoices por ciclo (regra final do desafio) |
-
-**Guardrails do scheduler, independentes do cron do Cloud Scheduler** (checados em `RunSchedulerUseCase.execute`):
-
-1. `period_expired` — `now >= startedAt + SCHEDULER_TOTAL_PERIOD`
-2. `max_cycles_reached` — ciclos `completed` já ≥ `maxCycles` (`floor(totalPeriod / cycleMinutes)`)
-3. `duplicate_cycle` — mesma janela de ciclo já adquirida (com recovery se `running` estiver obsoleto)
-
-`startedAt` vem de `SCHEDULER_START_AT` se definido, ou é gravado no Firestore (`starkbank_challenge_config/execution`) no primeiro ciclo executado — e nunca recalculado depois disso.
 
 ---
 
