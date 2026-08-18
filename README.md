@@ -44,6 +44,8 @@ Dois problemas reais e reproduzíveis, confirmados contra o sandbox ao vivo dura
 1. **`starkbank.webhook.query()` retorna `Promise<AsyncGenerator>`, não `AsyncGenerator` nem `Promise<Array>`.** O `query` do SDK Node é declarado `async function` e internamente retorna o resultado de chamar uma `async function*` — então quem chama precisa dar `await` na chamada **e** iterar com `for await`. Um `for await (const x of starkbank.webhook.query({}))` sozinho (sem o `await` externo) lança `TypeError: ... is not async iterable`. Essa mesma armadilha existe em `transfer.query()` (usado em `findTransferByExternalId`, ver `stark-bank-sdk-repository.ts`) — inclusive os tipos declarados (`.d.ts`) do SDK afirmam `Promise<Transfer[]>`, o que não bate com o comportamento real em runtime.
 2. **`Invoice.status` nunca assume o valor `"credited"`, mesmo sendo o valor que o integrador realmente precisa observar.** O campo `status` da Invoice só aceita `created | paid | overdue | canceled | expired | unknown | voided` — a própria API rejeita `"credited"` como filtro inválido. O sinal real de que o dinheiro foi creditado é `InvoiceLog.type === 'credited'`, um campo separado, no *log*, não na invoice. Isso é fácil de errar a partir da própria documentação do SDK (`Log.type` é documentado com exemplos `'registered'`/`'paid'`, sem menção a `'credited'`) — e errar significa que o webhook handler nunca cria um transfer para uma invoice paga, silenciosamente. Verificado direto no histórico de log de uma invoice real no sandbox.
 
+**Análise de qualidade (SonarCloud):** [sonarcloud.io/project/overview?id=Rafael-Galdino_stark-bank-challenge](https://sonarcloud.io/project/overview?id=Rafael-Galdino_stark-bank-challenge)
+
 ---
 
 ## O desafio central
@@ -563,12 +565,3 @@ Depois desse teardown, o IP de saída volta a ser dinâmico — se o serviço co
 | `npm run transfer-account:bootstrap` | Seed da conta destino no Firestore |
 | `npm run test-state:clear` | Limpa estado de teste no Firestore |
 | `npm run report:execution` | Gera `RELATORIO_EXECUCAO.md` — evidência dos 8 ciclos/24h, consultando só a API da Stark Bank (sem depender do Firestore) |
-
----
-
-## Bônus: bugs encontrados no SDK/API pública da Stark Bank
-
-Dois problemas reais e reproduzíveis, confirmados contra o sandbox ao vivo durante o desenvolvimento:
-
-1. **`starkbank.webhook.query()` retorna `Promise<AsyncGenerator>`, não `AsyncGenerator` nem `Promise<Array>`.** O `query` do SDK Node é declarado `async function` e internamente retorna o resultado de chamar uma `async function*` — então quem chama precisa dar `await` na chamada **e** iterar com `for await`. Um `for await (const x of starkbank.webhook.query({}))` sozinho (sem o `await` externo) lança `TypeError: ... is not async iterable`. Essa mesma armadilha existe em `transfer.query()` (usado em `findTransferByExternalId`, ver `stark-bank-sdk-repository.ts`) — inclusive os tipos declarados (`.d.ts`) do SDK afirmam `Promise<Transfer[]>`, o que não bate com o comportamento real em runtime.
-2. **`Invoice.status` nunca assume o valor `"credited"`, mesmo sendo o valor que o integrador realmente precisa observar.** O campo `status` da Invoice só aceita `created | paid | overdue | canceled | expired | unknown | voided` — a própria API rejeita `"credited"` como filtro inválido. O sinal real de que o dinheiro foi creditado é `InvoiceLog.type === 'credited'`, um campo separado, no *log*, não na invoice. Isso é fácil de errar a partir da própria documentação do SDK (`Log.type` é documentado com exemplos `'registered'`/`'paid'`, sem menção a `'credited'`) — e errar significa que o webhook handler nunca cria um transfer para uma invoice paga, silenciosamente. Verificado direto no histórico de log de uma invoice real no sandbox.
